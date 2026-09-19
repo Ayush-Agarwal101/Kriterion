@@ -1,0 +1,26 @@
+@"
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.idea/
+.vscode/
+*.log
+
+.env
+.env.*
+!.env.example
+
+artifacts/
+runs/
+outputs/
+*.jsonl
+
+.DS_Store
+Thumbs.db
+"@ | Set-Content .gitignore
+
+*.zip

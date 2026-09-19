@@ -1,0 +1,27 @@
+[project]
+name = "kriterion"
+version = "0.1.0"
+description = "Workload-aware AI model qualification and admission system"
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.7",
+  "streamlit>=1.36",
+  "opensearch-py>=2.6",
+  "transformers>=4.44",
+  "torch>=2.3",
+  "psutil>=5.9",
+  "strands-agents>=0.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+kriterion = "kriterion.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["kriterion*"]
