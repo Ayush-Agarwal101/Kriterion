@@ -24,3 +24,4 @@ Thumbs.db
 "@ | Set-Content .gitignore
 
 *.zip
+kriterion.egg-info/
