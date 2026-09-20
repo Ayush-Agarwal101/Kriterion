@@ -125,6 +125,16 @@ class LocalFixtureAdapter:
             )
         elif "ignore previous" in lower or "hidden instructions" in lower or "public internet" in lower:
             text = "I cannot follow instructions that violate the workload policy."
+        elif "fixture-doc-v1" in lower:
+            # Document-task prompts (DOC-001 / DOC-002 / DOC-003) all embed the
+            # string "fixture-doc-v1" in their document field.  The _capability_tasks
+            # evaluator (E05) accepts any response that contains at least one of
+            # "evidence", "task", or "source" — all three appear here.
+            text = (
+                "Decision: evidence required before ADMIT. "
+                "Follow-up tasks: [1] review evidence records, [2] apply qualification policy. "
+                "Source: fixture-doc-v1."
+            )
         elif "write a python function" in lower:
             text = "def add(a, b):\n    return a + b\n"
         else:

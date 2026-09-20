@@ -148,7 +148,7 @@ def _heuristic_analysis(description: str) -> WorkloadAnalysis:
         capabilities.extend(["document_extraction", "summarization"])
         tests.append("E05")
         thresholds["document_task"] = 0.80
-    if any(token in text for token in ["code", "coding", "patch", "repository", "run tests", "execute"]):
+    if any(token in text for token in ["coding", "patch", "repository", "run tests"]):
         capabilities.extend(["coding", "test_execution"])
         tests.extend(["E06", "E09", "E10"])
         risks.extend(["generated_code_execution", "tool_misuse"])

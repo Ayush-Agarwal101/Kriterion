@@ -1,0 +1,17 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Local Kriterion API path for SAM CLI and LocalStack.
+Resources:
+  QualificationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.10
+      Handler: kriterion.api.handler.handle
+      CodeUri: ..
+      Timeout: 30
+      Events:
+        Qualify:
+          Type: Api
+          Properties:
+            Path: /qualify
+            Method: post

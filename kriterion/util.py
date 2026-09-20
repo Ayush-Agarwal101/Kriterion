@@ -75,11 +75,14 @@ def git_commit() -> str | None:
         return None
 
 
+EVALUATOR_VERSION = "0.2.0"
+
+
 def environment() -> dict[str, Any]:
     return {
         "os": platform.platform(),
         "python_version": sys.version.split()[0],
-        "evaluator_version": "0.1.0",
+        "evaluator_version": EVALUATOR_VERSION,
         "git_commit": git_commit(),
         "finch_available": command_available("finch"),
         "firecracker_available": command_available("firecracker"),
