@@ -137,6 +137,76 @@ class TestImageReuseSkipsBuild(unittest.TestCase):
             f"First subprocess call must be finch build; got: {build_calls[0]}",
         )
 
+    def test_finch_run_receives_container_reachable_ollama_endpoint(self):
+        """The evaluator container must not receive host loopback as its
+        Ollama endpoint; inside Finch that would point back at the container."""
+        from kriterion.adapters import demo_models
+        from kriterion.agent import generate_spec_from_description
+        from kriterion.finch import run_in_finch
+
+        model = next(m for m in demo_models() if m.adapter == "fixture")
+        spec = generate_spec_from_description("Summarise documents as JSON.", allow_fallback=True)
+        run_calls: list[list[str]] = []
+
+        def tracking_subprocess(cmd, **kwargs):
+            mock = MagicMock()
+            if len(cmd) > 1 and cmd[1] == "run":
+                run_calls.append(list(cmd))
+            mock.returncode = 1
+            mock.stdout = ""
+            mock.stderr = "simulated run failure"
+            return mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"KRITERION_OLLAMA_BASE_URL": "http://127.0.0.1:11434"},
+                    clear=True,
+                ),
+                patch("kriterion.finch.command_available", return_value=True),
+                patch("kriterion.finch._image_exists", return_value=True),
+                patch("kriterion.finch.subprocess.run", side_effect=tracking_subprocess),
+            ):
+                run_in_finch("run_ollama_endpoint_test", model, spec, Path(tmp))
+
+        self.assertEqual(len(run_calls), 1)
+        self.assertIn("KRITERION_OLLAMA_BASE_URL=http://host.docker.internal:11434", run_calls[0])
+
+    def test_finch_ollama_endpoint_can_be_configured_explicitly(self):
+        from kriterion.adapters import demo_models
+        from kriterion.agent import generate_spec_from_description
+        from kriterion.finch import run_in_finch
+
+        model = next(m for m in demo_models() if m.adapter == "fixture")
+        spec = generate_spec_from_description("Summarise documents as JSON.", allow_fallback=True)
+        run_calls: list[list[str]] = []
+
+        def tracking_subprocess(cmd, **kwargs):
+            mock = MagicMock()
+            if len(cmd) > 1 and cmd[1] == "run":
+                run_calls.append(list(cmd))
+            mock.returncode = 1
+            mock.stdout = ""
+            mock.stderr = "simulated run failure"
+            return mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"KRITERION_FINCH_OLLAMA_BASE_URL": "http://ollama-from-finch:11434"},
+                    clear=True,
+                ),
+                patch("kriterion.finch.command_available", return_value=True),
+                patch("kriterion.finch._image_exists", return_value=True),
+                patch("kriterion.finch.subprocess.run", side_effect=tracking_subprocess),
+            ):
+                run_in_finch("run_configured_ollama_endpoint_test", model, spec, Path(tmp))
+
+        self.assertEqual(len(run_calls), 1)
+        self.assertIn("KRITERION_OLLAMA_BASE_URL=http://ollama-from-finch:11434", run_calls[0])
+
 
 class TestEvaluatorRunRuntimeInputs(unittest.TestCase):
     def test_model_and_spec_read_from_input_json(self):

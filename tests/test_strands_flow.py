@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
+import sys
+import types
 import unittest
+from unittest.mock import patch
 
 from kriterion.agent import example_workload_prompts, generate_spec_from_description
+from kriterion.schemas import ModelRecord
 
 
 class StrandsFlowTest(unittest.TestCase):
@@ -14,6 +19,196 @@ class StrandsFlowTest(unittest.TestCase):
         self.assertIn(spec.model_requirements["workload_analysis_mode"], {"REAL", "FALLBACK"})
         if spec.model_requirements["workload_analysis_mode"] == "FALLBACK":
             self.assertIn("heuristic_fallback", spec.model_requirements["workload_analysis_source"])
+
+    def test_strands_uses_configured_ollama_model_without_cloud_credentials(self):
+        captured = {}
+
+        class FakeOllamaModel:
+            def __init__(self, **kwargs):
+                captured["model_kwargs"] = kwargs
+
+        class FakeAgent:
+            def __init__(self, model):
+                captured["agent_model"] = model
+
+            def __call__(self, prompt):
+                captured["prompt"] = prompt
+                return json.dumps(
+                    {
+                        "required_capabilities": ["summarization"],
+                        "security_risks": [],
+                        "allowed_tools": [],
+                        "forbidden_actions": ["public_internet"],
+                        "runtime_limits": {"maximum_p95_latency_ms": 3000},
+                        "sandbox_requirements": {"provider": None},
+                        "required_tests": ["E01", "E02", "E03", "E04"],
+                        "thresholds": {"structured_output": 0.98},
+                    }
+                )
+
+        fake_strands = types.SimpleNamespace(Agent=FakeAgent)
+        fake_ollama_module = types.SimpleNamespace(OllamaModel=FakeOllamaModel)
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "strands": fake_strands,
+                    "strands.models": types.SimpleNamespace(),
+                    "strands.models.ollama": fake_ollama_module,
+                },
+            ),
+            patch.dict(
+                "os.environ",
+                {
+                    "KRITERION_STRANDS_OLLAMA_MODEL": "qwen-fast:latest",
+                    "KRITERION_OLLAMA_BASE_URL": "http://ollama.local:11434",
+                },
+                clear=False,
+            ),
+            patch("kriterion.agent.discover_ollama_models") as discover,
+        ):
+            spec = generate_spec_from_description("Summarize internal documents.")
+
+        discover.assert_not_called()
+        self.assertEqual(captured["model_kwargs"]["host"], "http://ollama.local:11434")
+        self.assertEqual(captured["model_kwargs"]["model_id"], "qwen-fast:latest")
+        self.assertEqual(spec.model_requirements["workload_analysis_mode"], "REAL")
+        self.assertEqual(spec.model_requirements["workload_analysis_source"], "strands:ollama:qwen-fast:latest")
+
+    def test_strands_defaults_to_discovered_ollama_model(self):
+        captured = {}
+
+        class FakeOllamaModel:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        class FakeAgent:
+            def __init__(self, model):
+                self.model = model
+
+            def __call__(self, prompt):
+                return json.dumps(
+                    {
+                        "required_capabilities": ["structured_output"],
+                        "security_risks": [],
+                        "allowed_tools": [],
+                        "forbidden_actions": [],
+                        "runtime_limits": {},
+                        "sandbox_requirements": {},
+                        "required_tests": ["E01", "E02", "E03", "E04"],
+                        "thresholds": {},
+                    }
+                )
+
+        discovered = [
+            ModelRecord(
+                model_id="ollama:qwen2.5:7b",
+                name="qwen2.5:7b",
+                source="ollama",
+                revision="sha256:qwen",
+                architecture="qwen2",
+                parameter_count="7B",
+                quantization=None,
+                license=None,
+                artifact_hash="sha256:qwen",
+                adapter="ollama",
+            )
+        ]
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "strands": types.SimpleNamespace(Agent=FakeAgent),
+                    "strands.models": types.SimpleNamespace(),
+                    "strands.models.ollama": types.SimpleNamespace(OllamaModel=FakeOllamaModel),
+                },
+            ),
+            patch.dict("os.environ", {}, clear=True),
+            patch("kriterion.agent.discover_ollama_models", return_value=discovered),
+        ):
+            spec = generate_spec_from_description("Return JSON summaries.")
+
+        self.assertEqual(captured["model_id"], "qwen2.5:7b")
+        self.assertEqual(spec.model_requirements["workload_analysis_source"], "strands:ollama:qwen2.5:7b")
+
+    def test_strands_accepts_dict_response_without_text_extraction(self):
+        class FakeOllamaModel:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class FakeAgent:
+            def __init__(self, model):
+                self.model = model
+
+            def __call__(self, prompt):
+                return {
+                    "required_capabilities": ["summarization", "structured_output"],
+                    "security_risks": ["prompt_injection"],
+                    "allowed_tools": [],
+                    "forbidden_actions": ["public_internet"],
+                    "runtime_limits": {"maximum_p95_latency_ms": 3000},
+                    "sandbox_requirements": {"provider": None},
+                    "logging-and-monitoring": "Continuous",
+                    "required_tests": ["E01", "E02", "E03", "E04", "E05"],
+                    "thresholds": {"structured_output": 0.98, "document_task": 0.8},
+                }
+
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "strands": types.SimpleNamespace(Agent=FakeAgent),
+                    "strands.models": types.SimpleNamespace(),
+                    "strands.models.ollama": types.SimpleNamespace(OllamaModel=FakeOllamaModel),
+                },
+            ),
+            patch.dict("os.environ", {"KRITERION_STRANDS_OLLAMA_MODEL": "qwen-fast:latest"}, clear=True),
+        ):
+            spec = generate_spec_from_description("Summarize documents with citations.")
+
+        self.assertEqual(spec.model_requirements["workload_analysis_mode"], "REAL")
+        self.assertIn("summarization", spec.required_capabilities)
+        self.assertIn("E05", spec.required_tests)
+
+    def test_strands_accepts_object_with_dict_message(self):
+        class FakeResult:
+            message = {
+                "required_capabilities": ["structured_output"],
+                "security_risks": [],
+                "allowed_tools": [],
+                "forbidden_actions": [],
+                "runtime_limits": {},
+                "sandbox_requirements": {},
+                "required_tests": ["E01", "E02", "E03", "E04"],
+                "thresholds": {},
+            }
+
+        class FakeOllamaModel:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class FakeAgent:
+            def __init__(self, model):
+                self.model = model
+
+            def __call__(self, prompt):
+                return FakeResult()
+
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "strands": types.SimpleNamespace(Agent=FakeAgent),
+                    "strands.models": types.SimpleNamespace(),
+                    "strands.models.ollama": types.SimpleNamespace(OllamaModel=FakeOllamaModel),
+                },
+            ),
+            patch.dict("os.environ", {"KRITERION_STRANDS_OLLAMA_MODEL": "qwen-fast:latest"}, clear=True),
+        ):
+            spec = generate_spec_from_description("Return structured JSON.")
+
+        self.assertEqual(spec.model_requirements["workload_analysis_mode"], "REAL")
+        self.assertIn("structured_output", spec.required_capabilities)
 
 
 class HeuristicContextTest(unittest.TestCase):

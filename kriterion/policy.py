@@ -114,27 +114,83 @@ def derive_policy_attributes(spec: QualificationSpec, evidence: list[EvidenceRec
     attributes["no_forbidden_action_violations"] = not forbidden
     return attributes, failed_conditions, reason_codes
 
+def _cedar_authorize(
+    policy_path: Path,
+    attributes: dict[str, object],
+) -> tuple[DecisionStatus, str | None]:
+    """Evaluate the admission decision with the installed Cedar CLI."""
 
-def _cedar_authorize(policy_path: Path, attributes: dict[str, Any]) -> tuple[DecisionStatus, str | None]:
-    if not command_available("cedar"):
-        return DecisionStatus.BLOCK, "cedar CLI not found on PATH"
-    request_path = Path("artifacts/cedar/request.json")
     entities_path = Path("artifacts/cedar/entities.json")
-    write_json(request_path, {"principal": "Kriterion::Run::\"current\"", "action": "Kriterion::Action::\"admit\"", "resource": "Kriterion::Workload::\"current\"", "context": attributes})
-    write_json(entities_path, [])
+    request_path = Path("artifacts/cedar/request.json")
+
+    if not policy_path.exists():
+        return DecisionStatus.BLOCK, f"Missing Cedar policy: {policy_path}"
+
+    cedar_context = {
+        "mandatory_evidence_complete": bool(
+            attributes.get("mandatory_evidence_complete", False)
+        ),
+        "no_mandatory_failures": bool(
+            attributes.get("no_mandatory_failures", False)
+        ),
+        "no_forbidden_action_violations": bool(
+            attributes.get("no_forbidden_action_violations", False)
+        ),
+        "artifact_pass": bool(attributes.get("artifact_pass", False)),
+        "license_pass": bool(attributes.get("license_pass", False)),
+        "runtime_within_threshold": bool(
+            attributes.get("runtime_within_threshold", False)
+        ),
+        "sandbox_pass": bool(attributes.get("sandbox_pass", False)),
+    }
+
+    request = {
+        "principal": 'Kriterion::Run::"current"',
+        "action": 'Action::"admit"',
+        "resource": 'Kriterion::Workload::"current"',
+        "context": cedar_context,
+    }
+
+    write_json(request_path, request)
+
     completed = subprocess.run(
-        ["cedar", "authorize", "--policies", str(policy_path), "--entities", str(entities_path), "--request", str(request_path)],
+        [
+            "cedar",
+            "authorize",
+            "--policies",
+            str(policy_path),
+            "--entities",
+            str(entities_path),
+            "--request-json",
+            str(request_path),
+        ],
         capture_output=True,
         text=True,
         check=False,
     )
-    output = (completed.stdout + completed.stderr).lower()
-    if completed.returncode != 0:
-        return DecisionStatus.BLOCK, output[-500:] or f"cedar exited {completed.returncode}"
-    if "allow" in output or "permit" in output:
-        return DecisionStatus.ADMIT, None
-    return DecisionStatus.BLOCK, None
 
+    stdout = completed.stdout.strip()
+    stderr = completed.stderr.strip()
+    output = (stdout + "\n" + stderr).strip()
+
+    # Cedar's authorization result is authoritative.
+    # A DENY is a valid policy decision, not a CLI failure.
+    stdout_upper = stdout.upper()
+
+    if "ALLOW" in stdout_upper:
+        return DecisionStatus.ADMIT, None
+
+    if "DENY" in stdout_upper:
+        return DecisionStatus.BLOCK, None
+
+    # Only treat the invocation as unavailable/error when Cedar
+    # produced no recognizable authorization decision.
+    if completed.returncode != 0:
+        return DecisionStatus.BLOCK, output[-1000:] or (
+            f"cedar exited {completed.returncode}"
+        )
+
+    return DecisionStatus.BLOCK, output[-1000:] or "Unknown Cedar response"
 
 def cedar_decision_consistency(
     policy_path: Path,

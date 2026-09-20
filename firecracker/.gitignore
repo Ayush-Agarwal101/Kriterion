@@ -1,0 +1,13 @@
+# Firecracker binary artifacts — built locally, never committed.
+# Obtain via:
+#   ./firecracker/fetch_kernel.sh        → assets/vmlinux
+#   ./firecracker/build_rootfs.sh        → assets/rootfs.ext4
+#
+# Keep the placeholder so git tracks the assets/ directory itself.
+assets/vmlinux
+assets/rootfs.ext4
+assets/*.ext4
+assets/*.img
+
+# Docker build cache leftovers
+*.tar

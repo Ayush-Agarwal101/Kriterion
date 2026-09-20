@@ -7,22 +7,14 @@ import subprocess
 from pathlib import Path
 
 from .adapters import adapter_for_model
+from .config import finch_ollama_base_url
 from .evaluators import run_evaluators
+from .finch_bridge import finch_available, run_finch, run_finch_with_volume
 from .schemas import EvidenceRecord, ModelRecord, QualificationSpec, Status, to_dict
 from .util import command_available, ensure_dir, read_json, write_json
 
 
 def _evaluator_image_tag() -> str:
-    """
-    Compute a content-addressed tag for the evaluator image.
-
-    Only files that determine the image contents are hashed: the Dockerfile,
-    the evaluator requirements file, all kriterion source files, Cedar
-    policies, and test fixtures.
-
-    Model identity, workload description, and all other run-time inputs are
-    intentionally excluded — changing them must NOT trigger a rebuild.
-    """
     candidates: list[Path] = [
         Path("finch/Dockerfile"),
         Path("finch/requirements-evaluator.txt"),
@@ -45,12 +37,14 @@ def _evaluator_image_tag() -> str:
 
 
 def _image_exists(tag: str) -> bool:
-    """Return True if an image with this exact tag is already in the local store."""
-    result = subprocess.run(
-        ["finch", "image", "inspect", tag], capture_output = True, text = True, encoding = "utf-8", errors = "replace",
-        check = False,
-    )
+    result = run_finch(["image", "inspect", tag], cwd=Path.cwd())
     return result.returncode == 0
+
+
+def _finch_is_available() -> bool:
+    # command_available remains the compatibility seam used by the existing
+    # tests. In WSL, the bridge supplies availability through Windows Finch.
+    return command_available("finch") or finch_available()
 
 
 def run_in_finch(
@@ -62,40 +56,52 @@ def run_in_finch(
 ) -> list[EvidenceRecord]:
     if os.environ.get("KRITERION_IN_FINCH") == "1":
         return run_evaluators(run_id, model, spec, adapter_for_model(model))
-    if not command_available("finch"):
+
+    if not _finch_is_available():
         if allow_local_fallback:
-            return [_finch_local_fallback(run_id, model, spec)] + run_evaluators(run_id, model, spec, adapter_for_model(model))
-        return [_finch_unavailable(run_id, model, spec, "Finch binary was not found on PATH.")]
+            return [_finch_local_fallback(run_id, model, spec)] + run_evaluators(
+                run_id, model, spec, adapter_for_model(model)
+            )
+        return [_finch_unavailable(
+            run_id, model, spec, "Finch could not be invoked from this environment."
+        )]
 
     io_root = ensure_dir(artifact_root / "finch" / run_id)
     input_path = io_root / "input.json"
     output_path = io_root / "evidence.jsonl"
 
-    # Model and workload are runtime inputs written to the mounted volume.
-    # They are never baked into the image.
-    write_json(input_path, {"run_id": run_id, "model": to_dict(model), "spec": to_dict(spec)})
+    write_json(
+        input_path,
+        {"run_id": run_id, "model": to_dict(model), "spec": to_dict(spec)},
+    )
 
-    # Compute a content-addressed tag so the image is rebuilt only when the
-    # Dockerfile, evaluator deps, source code, policies, or fixtures change.
-    # Changing the model or workload does not affect this tag.
     image_tag = _evaluator_image_tag()
     if not _image_exists(image_tag):
-        build = subprocess.run(
-            ["finch", "build", "-t", image_tag, "-f", "finch/Dockerfile", "."], capture_output = True, text = True,
-            encoding = "utf-8", errors = "replace", check = False,
+        build = run_finch(
+            ["build", "-t", image_tag, "-f", "finch/Dockerfile", "."],
+            cwd=Path.cwd(),
         )
         if build.returncode != 0:
-            return [_finch_unavailable(run_id, model, spec, "Finch build failed: " + (build.stdout + build.stderr)[-500:])]
+            return [_finch_unavailable(
+                run_id, model, spec,
+                "Finch build failed: " + (build.stdout + build.stderr)[-500:],
+            )]
 
-    run = subprocess.run(
+    # The endpoint is runtime configuration, never baked into the image.
+    # For the Windows Finch/WSL setup this should be the Windows-host-reachable
+    # Ollama address, e.g. http://192.168.0.1:11434.
+    ollama_url = finch_ollama_base_url()
+
+    run = run_finch_with_volume(
         [
-            "finch",
             "run",
             "--rm",
             "-e",
             "KRITERION_IN_FINCH=1",
+            "-e",
+            f"KRITERION_OLLAMA_BASE_URL={ollama_url}",
             "-v",
-            f"{io_root}:/kriterion-io",
+            "",
             image_tag,
             "evaluator-run",
             "--input",
@@ -103,12 +109,17 @@ def run_in_finch(
             "--output",
             "/kriterion-io/evidence.jsonl",
         ],
-        capture_output=True,
-        text=True,
-        check=False,
+        cwd=Path.cwd(),
+        host_volume_path=io_root,
+        container_volume_path="/kriterion-io",
     )
+
     if run.returncode != 0 or not output_path.exists():
-        return [_finch_unavailable(run_id, model, spec, "Finch evaluator run failed: " + (run.stdout + run.stderr)[-500:])]
+        return [_finch_unavailable(
+            run_id, model, spec,
+            "Finch evaluator run failed: " + (run.stdout + run.stderr)[-500:],
+        )]
+
     return [_finch_pass(run_id, model, spec, image_tag)] + _load_evidence(output_path)
 
 
@@ -118,7 +129,9 @@ def evaluator_run(input_path: Path, output_path: Path) -> None:
 
     model = ModelRecord(**payload["model"])
     spec = QualificationSpec(**payload["spec"])
-    evidence = run_evaluators(payload["run_id"], model, spec, adapter_for_model(model))
+    evidence = run_evaluators(
+        payload["run_id"], model, spec, adapter_for_model(model)
+    )
     ensure_dir(output_path.parent)
     with output_path.open("w", encoding="utf-8") as handle:
         for item in evidence:
@@ -126,15 +139,12 @@ def evaluator_run(input_path: Path, output_path: Path) -> None:
 
 
 def _load_evidence(path: Path) -> list[EvidenceRecord]:
-    from .schemas import PYDANTIC_AVAILABLE, EvidenceRecord, SandboxRecord
+    from .schemas import PYDANTIC_AVAILABLE, SandboxRecord
 
     records: list[EvidenceRecord] = []
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
             data = json.loads(line)
-            # Pydantic v2 coerces nested dicts to model instances automatically.
-            # On the dataclass path there is no coercion, so construct SandboxRecord
-            # explicitly when the field arrives as a plain dict.
             if not PYDANTIC_AVAILABLE and isinstance(data.get("sandbox"), dict):
                 data["sandbox"] = SandboxRecord(**data["sandbox"])
             records.append(EvidenceRecord(**data))
@@ -146,21 +156,14 @@ def _finch_unavailable(run_id: str, model: ModelRecord, spec: QualificationSpec,
     from .schemas import SandboxRecord
 
     return _evidence(
-        run_id,
-        model,
-        spec,
-        "INFRA-FINCH",
-        "finch_evaluator_environment",
-        "FINCH-001",
-        "evaluator_environment",
-        "infrastructure",
-        "Evaluator suite executes inside Finch container",
-        detail,
-        Status.INSUFFICIENT_EVIDENCE,
-        True,
-        score=0.0,
-        threshold=1.0,
-        sandbox=SandboxRecord(required=False, used=False, provider="finch", available=False, detail=detail),
+        run_id, model, spec, "INFRA-FINCH", "finch_evaluator_environment",
+        "FINCH-001", "evaluator_environment", "infrastructure",
+        "Evaluator suite executes inside Finch container", detail,
+        Status.INSUFFICIENT_EVIDENCE, True, score=0.0, threshold=1.0,
+        sandbox=SandboxRecord(
+            required=False, used=False, provider="finch",
+            available=False, detail=detail,
+        ),
         error=detail,
     )
 
@@ -170,21 +173,15 @@ def _finch_pass(run_id: str, model: ModelRecord, spec: QualificationSpec, image_
     from .schemas import SandboxRecord
 
     return _evidence(
-        run_id,
-        model,
-        spec,
-        "INFRA-FINCH",
-        "finch_evaluator_environment",
-        "FINCH-001",
-        "evaluator_environment",
-        "infrastructure",
+        run_id, model, spec, "INFRA-FINCH", "finch_evaluator_environment",
+        "FINCH-001", "evaluator_environment", "infrastructure",
         "Evaluator suite executes inside Finch container",
         f"Finch image {image_tag} built and evaluator completed.",
-        Status.PASS,
-        True,
-        score=1.0,
-        threshold=1.0,
-        sandbox=SandboxRecord(required=False, used=True, provider="finch", available=True, detail=image_tag),
+        Status.PASS, True, score=1.0, threshold=1.0,
+        sandbox=SandboxRecord(
+            required=False, used=True, provider="finch",
+            available=True, detail=image_tag,
+        ),
         extra_repro={"finch_image": image_tag},
     )
 
@@ -194,20 +191,14 @@ def _finch_local_fallback(run_id: str, model: ModelRecord, spec: QualificationSp
     from .schemas import SandboxRecord
 
     return _evidence(
-        run_id,
-        model,
-        spec,
-        "INFRA-FINCH",
-        "finch_evaluator_environment",
-        "FINCH-DEV-FALLBACK",
-        "evaluator_environment",
-        "infrastructure",
+        run_id, model, spec, "INFRA-FINCH", "finch_evaluator_environment",
+        "FINCH-DEV-FALLBACK", "evaluator_environment", "infrastructure",
         "Evaluator suite executes inside Finch container",
         "Developer fallback executed evaluators locally; not valid for admission benchmark.",
-        Status.INSUFFICIENT_EVIDENCE,
-        True,
-        score=0.0,
-        threshold=1.0,
-        sandbox=SandboxRecord(required=False, used=False, provider="finch", available=False, detail="developer fallback"),
+        Status.INSUFFICIENT_EVIDENCE, True, score=0.0, threshold=1.0,
+        sandbox=SandboxRecord(
+            required=False, used=False, provider="finch",
+            available=False, detail="developer fallback",
+        ),
         error="developer local evaluator fallback",
     )

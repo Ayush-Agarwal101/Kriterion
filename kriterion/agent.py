@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from .adapters import discover_ollama_models
+from .config import ollama_base_url, strands_ollama_model_id
 from .schemas import QualificationSpec, Requirement, RiskProfile
 
 POLICY_VERSION = "qualification-admission-v1"
@@ -44,8 +47,11 @@ class StrandsWorkloadAnalyzer:
 
     def _analyze_with_strands(self, description: str) -> WorkloadAnalysis:
         from strands import Agent  # type: ignore
+        from strands.models.ollama import OllamaModel  # type: ignore
 
-        agent = Agent()
+        model_id = _configured_strands_ollama_model_id()
+        model = OllamaModel(host=ollama_base_url(), model_id=model_id)
+        agent = Agent(model=model)
         prompt = (
             "Analyze this AI workload. Return only JSON with keys: "
             "required_capabilities, security_risks, allowed_tools, forbidden_actions, "
@@ -56,7 +62,7 @@ class StrandsWorkloadAnalyzer:
         result = agent(prompt)
         data = _extract_json(result)
         return WorkloadAnalysis(
-            source="strands",
+            source=f"strands:ollama:{model_id}",
             required_capabilities=list(data.get("required_capabilities", [])),
             security_risks=list(data.get("security_risks", [])),
             allowed_tools=list(data.get("allowed_tools", [])),
@@ -88,7 +94,7 @@ def generate_spec_from_description(
         model_requirements={
             "metadata_required": ["model_id", "revision", "license", "artifact_hash"],
             "workload_analysis_source": analysis.source,
-            "workload_analysis_mode": "REAL" if analysis.source == "strands" else "FALLBACK",
+            "workload_analysis_mode": "REAL" if analysis.source.startswith("strands") else "FALLBACK",
         },
         required_capabilities=analysis.required_capabilities,
         required_tests=analysis.required_tests,
@@ -235,9 +241,31 @@ def _name_from_description(description: str) -> str:
 
 
 def _extract_json(result: Any) -> dict[str, Any]:
-    text = result if isinstance(result, str) else getattr(result, "message", str(result))
+    if isinstance(result, Mapping):
+        return dict(result)
+
+    message = getattr(result, "message", None)
+    if isinstance(message, Mapping):
+        return dict(message)
+
+    if hasattr(result, "model_dump"):
+        dumped = result.model_dump()
+        if isinstance(dumped, Mapping):
+            return dict(dumped)
+
+    text = result if isinstance(result, str) else message if isinstance(message, str) else str(result)
     start = text.find("{")
     end = text.rfind("}")
     if start < 0 or end < start:
         raise ValueError("Strands response did not contain JSON")
     return json.loads(text[start : end + 1])
+
+
+def _configured_strands_ollama_model_id() -> str:
+    configured = strands_ollama_model_id()
+    if configured:
+        return configured
+    discovered = discover_ollama_models()
+    if not discovered:
+        raise RuntimeError("No local Ollama models discovered for Strands workload analysis")
+    return discovered[0].name

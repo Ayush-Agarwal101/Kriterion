@@ -1,0 +1,46 @@
+# firecracker/Dockerfile.rootfs
+#
+# Builds the minimal Alpine Linux rootfs that runs inside every Firecracker
+# micro-VM.  The image is exported as a tar by build_rootfs.sh and then
+# written into an ext4 image — it is never pushed to a registry.
+#
+# Guest execution path:
+#   kernel → /sbin/init (guest_init.sh, PID 1)
+#            → mounts /dev/vdb (payload ext4)
+#            → python3 /sbin/payload_runner.py /mnt/payload
+#               → runs payload.py, writes result.json
+#            → power-off via SysRq
+#
+# Alpine is chosen for its tiny closure (~8 MB compressed) and because
+# busybox provides all the shell primitives that guest_init.sh needs.
+
+FROM alpine:3.19 AS base
+
+# Install Python 3 (stdlib only — payload_runner.py uses no third-party libs).
+# python3 pulls in ~50 MB; nothing else is needed for the runner.
+RUN apk add --no-cache python3
+
+# ── Guest init (PID 1) ────────────────────────────────────────────────────────
+# Replace Alpine's busybox init with our custom init script.
+# The kernel boots and executes /sbin/init; panic=1 in boot_args ensures the
+# VM halts on exit rather than rebooting endlessly.
+COPY runner/guest_init.sh /sbin/init
+RUN chmod 755 /sbin/init
+
+# ── Payload runner (called by init) ──────────────────────────────────────────
+COPY runner/payload_runner.py /sbin/payload_runner.py
+RUN chmod 755 /sbin/payload_runner.py
+
+# ── Sanity check ─────────────────────────────────────────────────────────────
+# Verify the init script is syntactically valid and Python is importable.
+# These fail the Docker build early rather than silently at VM boot.
+RUN sh -n /sbin/init \
+ && python3 -c "import json, os, subprocess, sys, traceback; print('payload_runner deps OK')" \
+ && python3 -m py_compile /sbin/payload_runner.py \
+ && echo "rootfs sanity checks passed"
+
+# The final image is used only for 'docker export', not as a runnable container.
+# guest_init.sh is PID 1, so it will immediately fail if run as a container
+# (no /proc, no /dev/vdb).  That is intentional — it is a VM rootfs, not a
+# container image.
+CMD ["/sbin/init"]
