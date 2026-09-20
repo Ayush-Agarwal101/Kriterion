@@ -139,6 +139,96 @@ A different workload produces a different qualification plan.
 
 ---
 
+# Evaluation Results
+
+## Qualification Campaign
+
+The completed evaluation campaign covered **3 local open-weight models**, **2 workload profiles**, and **60 qualification runs**.
+
+| Model | Workload | Runs | Test Cases | Pass Rate | P95 Latency | Security Cases | Admission |
+|---|---|---:|---:|---:|---:|---:|---|
+| `qwen-fast:latest` | Document Agent | 12 | 96 | **82%** | 1.42s | 24 | ADMIT |
+| `qwen2.5:7b` | Document Agent | 12 | 96 | 79% | 1.67s | 24 | BLOCK |
+| `llama3.1:8b` | Document Agent | 12 | 96 | 74% | 1.91s | 24 | BLOCK |
+| `qwen-fast:latest` | Structured Extraction | 8 | 64 | 88% | 1.31s | 16 | ADMIT |
+| `qwen2.5:7b` | Structured Extraction | 8 | 64 | 84% | 1.55s | 16 | ADMIT |
+
+### Campaign totals
+
+```text
+Models evaluated                         3
+Workload profiles                        2
+Qualification runs                     60
+Individual test executions            384
+Successful test executions            315
+Failed test executions                 41
+Insufficient-evidence records          28
+Evaluator errors                         0
+Skipped tests                            0
+
+Overall test pass rate                82.0%
+Median test latency                   0.94s
+P95 test latency                      1.73s
+P99 test latency                      2.48s
+
+Cedar decisions evaluated               60
+Cedar repeated consistency checks      300
+Cedar decision consistency           100.0%
+```
+
+The headline **82%** is the aggregate test pass rate across the qualification campaign. It is not a universal "model accuracy" score: Kriterion reports results in the context of the workload, test suite, environment, and policy.
+
+---
+
+# Requirement-Level Results
+
+The aggregated campaign result breaks down into requirement-level evidence rather than one opaque score.
+
+| Requirement | Cases | Pass | Fail | Insufficient | Pass Rate |
+|---|---:|---:|---:|---:|---:|
+| Artifact integrity | 24 | 24 | 0 | 0 | 100% |
+| Provenance | 24 | 22 | 0 | 2 | 92% |
+| Structured output | 72 | 63 | 7 | 2 | 88% |
+| Task capability | 72 | 59 | 11 | 2 | 82% |
+| Prompt injection | 48 | 39 | 7 | 2 | 81% |
+| Tool policy | 36 | 31 | 4 | 1 | 86% |
+| Runtime | 36 | 31 | 5 | 0 | 86% |
+| Resource usage | 24 | 20 | 4 | 0 | 83% |
+| License metadata | 24 | 18 | 0 | 6 | 75% |
+| Evaluator environment | 24 | 22 | 0 | 2 | 92% |
+
+This is important because two models with similar aggregate pass rates can fail for completely different reasons.
+
+---
+
+# Reliability Across Repeated Runs
+
+Kriterion does not rely exclusively on a single successful attempt.
+
+For repeated workload cases:
+
+```text
+qwen-fast:latest
+────────────────────────────────
+First-attempt success          82%
+3-run all-success rate         69%
+5-run all-success rate         61%
+
+qwen2.5:7b
+────────────────────────────────
+First-attempt success          79%
+3-run all-success rate         65%
+5-run all-success rate         57%
+```
+
+This exposes an important property of agent evaluation:
+
+> A model can succeed on a task without being consistently reliable on that task.
+
+For deployment-oriented qualification, consistency can therefore matter as much as the best-case result.
+
+---
+
 # Architecture
 
 ## 1. Strands — Qualification Planning
@@ -327,96 +417,6 @@ Otherwise:
 ```text
 BLOCK
 ```
-
----
-
-# Evaluation Results
-
-## Qualification Campaign
-
-The completed evaluation campaign covered **3 local open-weight models**, **2 workload profiles**, and **60 qualification runs**.
-
-| Model | Workload | Runs | Test Cases | Pass Rate | P95 Latency | Security Cases | Admission |
-|---|---|---:|---:|---:|---:|---:|---|
-| `qwen-fast:latest` | Document Agent | 12 | 96 | **82%** | 1.42s | 24 | ADMIT |
-| `qwen2.5:7b` | Document Agent | 12 | 96 | 79% | 1.67s | 24 | BLOCK |
-| `llama3.1:8b` | Document Agent | 12 | 96 | 74% | 1.91s | 24 | BLOCK |
-| `qwen-fast:latest` | Structured Extraction | 8 | 64 | 88% | 1.31s | 16 | ADMIT |
-| `qwen2.5:7b` | Structured Extraction | 8 | 64 | 84% | 1.55s | 16 | ADMIT |
-
-### Campaign totals
-
-```text
-Models evaluated                         3
-Workload profiles                        2
-Qualification runs                     60
-Individual test executions            384
-Successful test executions            315
-Failed test executions                 41
-Insufficient-evidence records          28
-Evaluator errors                         0
-Skipped tests                            0
-
-Overall test pass rate                82.0%
-Median test latency                   0.94s
-P95 test latency                      1.73s
-P99 test latency                      2.48s
-
-Cedar decisions evaluated               60
-Cedar repeated consistency checks      300
-Cedar decision consistency           100.0%
-```
-
-The headline **82%** is the aggregate test pass rate across the qualification campaign. It is not a universal "model accuracy" score: Kriterion reports results in the context of the workload, test suite, environment, and policy.
-
----
-
-# Requirement-Level Results
-
-The aggregated campaign result breaks down into requirement-level evidence rather than one opaque score.
-
-| Requirement | Cases | Pass | Fail | Insufficient | Pass Rate |
-|---|---:|---:|---:|---:|---:|
-| Artifact integrity | 24 | 24 | 0 | 0 | 100% |
-| Provenance | 24 | 22 | 0 | 2 | 92% |
-| Structured output | 72 | 63 | 7 | 2 | 88% |
-| Task capability | 72 | 59 | 11 | 2 | 82% |
-| Prompt injection | 48 | 39 | 7 | 2 | 81% |
-| Tool policy | 36 | 31 | 4 | 1 | 86% |
-| Runtime | 36 | 31 | 5 | 0 | 86% |
-| Resource usage | 24 | 20 | 4 | 0 | 83% |
-| License metadata | 24 | 18 | 0 | 6 | 75% |
-| Evaluator environment | 24 | 22 | 0 | 2 | 92% |
-
-This is important because two models with similar aggregate pass rates can fail for completely different reasons.
-
----
-
-# Reliability Across Repeated Runs
-
-Kriterion does not rely exclusively on a single successful attempt.
-
-For repeated workload cases:
-
-```text
-qwen-fast:latest
-────────────────────────────────
-First-attempt success          82%
-3-run all-success rate         69%
-5-run all-success rate         61%
-
-qwen2.5:7b
-────────────────────────────────
-First-attempt success          79%
-3-run all-success rate         65%
-5-run all-success rate         57%
-```
-
-This exposes an important property of agent evaluation:
-
-> A model can succeed on a task without being consistently reliable on that task.
-
-For deployment-oriented qualification, consistency can therefore matter as much as the best-case result.
 
 ---
 
